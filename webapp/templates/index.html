@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Floor2CAD Converter</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f4f4;
+      margin: 0;
+      padding: 0;
+    }
+    header {
+      background: #1a1a1a;
+      color: white;
+      text-align: center;
+      padding: 1rem;
+    }
+    .logo {
+      max-height: 40px;
+      vertical-align: middle;
+    }
+    h1 {
+      margin: 0.5rem 0;
+    }
+    .container {
+      max-width: 600px;
+      margin: 2rem auto;
+      background: white;
+      padding: 2rem;
+      border-radius: 10px;
+      box-shadow: 0 0 15px rgba(0,0,0,0.05);
+      text-align: center;
+    }
+    .drop-zone {
+      border: 2px dashed #aaa;
+      padding: 2rem;
+      border-radius: 8px;
+      background: #fafafa;
+      cursor: pointer;
+      transition: border-color 0.3s;
+    }
+    .drop-zone.dragover {
+      border-color: #28a745;
+      background: #f0fff5;
+    }
+    .drop-zone input {
+      display: none;
+    }
+    .filename {
+      margin-top: 1rem;
+      font-weight: bold;
+      color: #333;
+    }
+    .preview {
+      margin-top: 1rem;
+      max-height: 200px;
+      display: none;
+    }
+    .submit-btn {
+      margin-top: 1.5rem;
+      background: #28a745;
+      color: white;
+      padding: 0.6rem 1.5rem;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    .error {
+      color: red;
+      margin-top: 1rem;
+    }
+    .loader {
+      margin-top: 1.5rem;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <img src="/static/logo.png" alt="Floor2CAD Logo" class="logo">
+  <h1>Floor2CAD Converter</h1>
+</header>
+
+<div class="container">
+  <form id="uploadForm" action="/convert" method="post" enctype="multipart/form-data">
+    <div class="drop-zone" id="dropZone">
+      <p>Drag & drop your PNG, JPG or PDF file here<br>or click to select one</p>
+      <input type="file" name="file" id="fileInput" accept=".png,.jpg,.jpeg,.pdf" required>
+      <div class="filename" id="filename"></div>
+      <img id="previewImg" class="preview" />
+    </div>
+
+    <button type="submit" class="submit-btn">Convert & Download</button>
+    <div class="loader" id="loader">⏳ Converting, please wait...</div>
+  </form>
+
+  {% if error %}
+  <div class="error">
+    ⚠️ {{ error }}
+  </div>
+  {% endif %}
+</div>
+
+<script>
+  const dropZone = document.getElementById("dropZone");
+  const fileInput = document.getElementById("fileInput");
+  const filenameDisplay = document.getElementById("filename");
+  const previewImg = document.getElementById("previewImg");
+  const loader = document.getElementById("loader");
+  const form = document.getElementById("uploadForm");
+
+  dropZone.addEventListener("click", () => fileInput.click());
+
+  dropZone.addEventListener("dragover", e => {
+    e.preventDefault();
+    dropZone.classList.add("dragover");
+  });
+
+  dropZone.addEventListener("dragleave", () => {
+    dropZone.classList.remove("dragover");
+  });
+
+  dropZone.addEventListener("drop", e => {
+    e.preventDefault();
+    dropZone.classList.remove("dragover");
+
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      fileInput.files = files;
+      showFileDetails(files[0]);
+    }
+  });
+
+  fileInput.addEventListener("change", () => {
+    if (fileInput.files.length > 0) {
+      showFileDetails(fileInput.files[0]);
+    }
+  });
+
+  function showFileDetails(file) {
+    filenameDisplay.textContent = file.name;
+
+    if (file.type.startsWith("image/")) {
+      const reader = new FileReader();
+      reader.onload = e => {
+        previewImg.src = e.target.result;
+        previewImg.style.display = "block";
+      };
+      reader.readAsDataURL(file);
+    } else {
+      previewImg.style.display = "none";
+    }
+  }
+
+  form.addEventListener("submit", () => {
+    loader.style.display = "block";
+  });
+</script>
+
+</body>
+</html>

@@ -1,0 +1,2 @@
+[console_scripts]
+floor2cad = floor2cad.convert_to_dxf:main
