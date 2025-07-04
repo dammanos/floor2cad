@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: floor2cad
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    ports:
+      - port: 8080
