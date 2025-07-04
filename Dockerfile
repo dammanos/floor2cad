@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-# Εγκατάσταση Tesseract και βιβλιοθηκών
+# Εγκατάσταση απαραίτητων εργαλείων και Tesseract
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     libglib2.0-0 \
@@ -9,15 +9,15 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
-# Ορισμός working directory
+# Δημιουργία directory και αντιγραφή αρχείων
 WORKDIR /app
 COPY . .
 
-# Εγκατάσταση dependencies
+# Εγκατάσταση εξαρτήσεων
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Εκθέτουμε το port 10000 για Render
+# Εκθέτει το port για Render
 EXPOSE 10000
 
-# Εκκίνηση FastAPI με Uvicorn
+# Εκκίνηση εφαρμογής
 CMD ["uvicorn", "webapp.app:app", "--host", "0.0.0.0", "--port", "10000"]
