@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Uploads and outputs
+webapp/uploads/*
+webapp/outputs/*
+outputs/*
+
+# Test outputs
+*.dxf
+*.pdf
+!test_conversion.py
+
+# Keep directory structure
+!webapp/uploads/.gitkeep
+!webapp/outputs/.gitkeep
+!outputs/.gitkeep

@@ -7,3 +7,4 @@ PyMuPDF
 pytesseract
 ezdxf
 numpy
+python-multipart
