@@ -68,11 +68,17 @@ async def convert_file(
             zip_filename = os.path.splitext(filename)[0] + ".zip"
             zip_path = os.path.join(OUTPUTS_DIR, zip_filename)
             
-            with zipfile.ZipFile(zip_path, 'w') as zipf:
-                zipf.write(output_path, os.path.basename(output_path))
-                zipf.write(pdf_preview_path, os.path.basename(pdf_preview_path))
-            
-            return FileResponse(zip_path, filename=zip_filename, media_type="application/zip")
+            try:
+                with zipfile.ZipFile(zip_path, 'w') as zipf:
+                    zipf.write(output_path, os.path.basename(output_path))
+                    zipf.write(pdf_preview_path, os.path.basename(pdf_preview_path))
+                
+                return FileResponse(zip_path, filename=zip_filename, media_type="application/zip")
+            except Exception as e:
+                # Clean up temporary files on error
+                if os.path.exists(zip_path):
+                    os.remove(zip_path)
+                raise ValueError(f"Failed to create ZIP file: {str(e)}")
         else:
             return FileResponse(output_path, filename=output_filename, media_type="application/dxf")
 

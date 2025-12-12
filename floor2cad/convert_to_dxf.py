@@ -122,16 +122,19 @@ def convert_pdf_to_dxf(input_path, output_path, page_number=0, filter_noise=True
     page = doc[page_number]
     pix = page.get_pixmap(dpi=150)
     
+    # Validate pixel format
+    if pix.n not in (3, 4):
+        doc.close()
+        raise ValueError(f"Unsupported pixel format: {pix.n} channels. Expected 3 (RGB) or 4 (RGBA).")
+    
     # Convert to numpy array (RGB)
     img_data = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
     
     # Convert RGB to BGR for OpenCV
     if pix.n == 4:  # RGBA
         image = cv2.cvtColor(img_data, cv2.COLOR_RGBA2BGR)
-    elif pix.n == 3:  # RGB
+    else:  # RGB
         image = cv2.cvtColor(img_data, cv2.COLOR_RGB2BGR)
-    else:
-        image = cv2.cvtColor(img_data, cv2.COLOR_GRAY2BGR)
     
     doc.close()
     
@@ -155,9 +158,8 @@ def convert_tiff_to_dxf(input_path, output_path, page_number=0, filter_noise=Tru
         if page_number >= n_frames:
             raise ValueError(f"Page {page_number} not found. TIFF has {n_frames} page(s).")
         
-        # Seek to the desired page
-        if n_frames > 1:
-            pil_image.seek(page_number)
+        # Seek to the desired page (works for both single and multi-page)
+        pil_image.seek(page_number)
         
         # Convert to numpy array
         image_rgb = np.array(pil_image.convert('RGB'))

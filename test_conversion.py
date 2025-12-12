@@ -182,8 +182,12 @@ def main():
     
     for test in tests:
         try:
-            if test():
+            result = test()
+            if result is True or result is None:  # Accept both True and None as success
                 passed += 1
+            else:
+                print(f"✗ {test.__name__} returned unexpected value: {result}")
+                failed += 1
         except Exception as e:
             print(f"✗ {test.__name__} failed: {e}")
             import traceback
