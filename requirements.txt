@@ -5,3 +5,5 @@ opencv-python
 pillow
 PyMuPDF
 pytesseract
+ezdxf
+numpy

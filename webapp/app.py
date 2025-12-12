@@ -1,10 +1,11 @@
 import os
+import zipfile
 from datetime import datetime
-from fastapi import FastAPI, File, UploadFile, Request
+from fastapi import FastAPI, File, UploadFile, Request, Form
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-from floor2cad.convert_to_dxf import convert_png_to_dxf, convert_pdf_to_dxf
+from floor2cad.convert_to_dxf import convert_png_to_dxf, convert_pdf_to_dxf, convert_tiff_to_dxf
 
 app = FastAPI()
 
@@ -32,7 +33,12 @@ async def read_root(request: Request):
     })
 
 @app.post("/convert")
-async def convert_file(request: Request, file: UploadFile = File(...)):
+async def convert_file(
+    request: Request, 
+    file: UploadFile = File(...),
+    page_number: int = Form(0),
+    include_pdf: bool = Form(False)
+):
     try:
         ext = file.filename.split(".")[-1].lower()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -46,14 +52,29 @@ async def convert_file(request: Request, file: UploadFile = File(...)):
         output_filename = os.path.splitext(filename)[0] + ".dxf"
         output_path = os.path.join(OUTPUTS_DIR, output_filename)
 
+        pdf_preview_path = None
+        
         if ext in ["png", "jpg", "jpeg"]:
-            convert_png_to_dxf(upload_path, output_path)
+            pdf_preview_path = convert_png_to_dxf(upload_path, output_path, generate_pdf=include_pdf)
         elif ext == "pdf":
-            convert_pdf_to_dxf(upload_path, output_path)
+            pdf_preview_path = convert_pdf_to_dxf(upload_path, output_path, page_number=page_number, generate_pdf=include_pdf)
+        elif ext in ["tif", "tiff"]:
+            pdf_preview_path = convert_tiff_to_dxf(upload_path, output_path, page_number=page_number, generate_pdf=include_pdf)
         else:
             raise ValueError("Unsupported file type")
 
-        return FileResponse(output_path, filename=output_filename, media_type="application/dxf")
+        # If PDF preview requested, create a zip with both files
+        if include_pdf and pdf_preview_path and os.path.exists(pdf_preview_path):
+            zip_filename = os.path.splitext(filename)[0] + ".zip"
+            zip_path = os.path.join(OUTPUTS_DIR, zip_filename)
+            
+            with zipfile.ZipFile(zip_path, 'w') as zipf:
+                zipf.write(output_path, os.path.basename(output_path))
+                zipf.write(pdf_preview_path, os.path.basename(pdf_preview_path))
+            
+            return FileResponse(zip_path, filename=zip_filename, media_type="application/zip")
+        else:
+            return FileResponse(output_path, filename=output_filename, media_type="application/dxf")
 
     except Exception as e:
         return templates.TemplateResponse("index.html", {
@@ -61,3 +82,4 @@ async def convert_file(request: Request, file: UploadFile = File(...)):
             "error": str(e),
             "demo_used": False
         })
+

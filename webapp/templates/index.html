@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Floor2CAD Converter</title>
+  <title>Floor2CAD Converter - Matterport Floorplans</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -23,6 +23,11 @@
     }
     h1 {
       margin: 0.5rem 0;
+    }
+    .subtitle {
+      font-size: 0.9rem;
+      color: #aaa;
+      margin-top: 0.3rem;
     }
     .container {
       max-width: 600px;
@@ -58,6 +63,26 @@
       max-height: 200px;
       display: none;
     }
+    .options {
+      margin-top: 1.5rem;
+      text-align: left;
+      padding: 1rem;
+      background: #f9f9f9;
+      border-radius: 5px;
+    }
+    .option-row {
+      margin: 0.8rem 0;
+    }
+    .option-row label {
+      display: inline-block;
+      margin-left: 0.5rem;
+      cursor: pointer;
+    }
+    .option-row input[type="number"] {
+      width: 60px;
+      padding: 0.3rem;
+      margin-left: 0.5rem;
+    }
     .submit-btn {
       margin-top: 1.5rem;
       background: #28a745;
@@ -67,6 +92,9 @@
       border-radius: 5px;
       cursor: pointer;
       font-size: 1rem;
+    }
+    .submit-btn:hover {
+      background: #218838;
     }
     .error {
       color: red;
@@ -83,15 +111,31 @@
 <header>
   <img src="/static/logo.png" alt="Floor2CAD Logo" class="logo">
   <h1>Floor2CAD Converter</h1>
+  <p class="subtitle">Convert Matterport Floorplan Exports to DXF</p>
 </header>
 
 <div class="container">
   <form id="uploadForm" action="/convert" method="post" enctype="multipart/form-data">
     <div class="drop-zone" id="dropZone">
-      <p>Drag & drop your PNG, JPG or PDF file here<br>or click to select one</p>
-      <input type="file" name="file" id="fileInput" accept=".png,.jpg,.jpeg,.pdf" required>
+      <p>Drag & drop your PNG, JPG, PDF, or TIFF file here<br>or click to select one</p>
+      <input type="file" name="file" id="fileInput" accept=".png,.jpg,.jpeg,.pdf,.tif,.tiff" required>
       <div class="filename" id="filename"></div>
       <img id="previewImg" class="preview" />
+    </div>
+
+    <div class="options">
+      <div class="option-row" id="pageNumberRow" style="display: none;">
+        <strong>Page Number:</strong>
+        <input type="number" name="page_number" id="pageNumber" value="0" min="0">
+        <small>(for multi-page PDF/TIFF, default is 0)</small>
+      </div>
+      
+      <div class="option-row">
+        <input type="checkbox" name="include_pdf" id="includePdf" value="true">
+        <label for="includePdf">
+          <strong>Include PDF preview</strong> (download as ZIP with both DXF and PDF)
+        </label>
+      </div>
     </div>
 
     <button type="submit" class="submit-btn">Convert & Download</button>
@@ -112,6 +156,7 @@
   const previewImg = document.getElementById("previewImg");
   const loader = document.getElementById("loader");
   const form = document.getElementById("uploadForm");
+  const pageNumberRow = document.getElementById("pageNumberRow");
 
   dropZone.addEventListener("click", () => fileInput.click());
 
@@ -143,6 +188,14 @@
 
   function showFileDetails(file) {
     filenameDisplay.textContent = file.name;
+    
+    // Show page number option for PDF and TIFF files
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (ext === 'pdf' || ext === 'tif' || ext === 'tiff') {
+      pageNumberRow.style.display = 'block';
+    } else {
+      pageNumberRow.style.display = 'none';
+    }
 
     if (file.type.startsWith("image/")) {
       const reader = new FileReader();
