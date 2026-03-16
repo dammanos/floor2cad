@@ -1,0 +1,4 @@
+-r requirements-base.txt
+rapidocr-onnxruntime>=1.4.4
+# Optional alternative backend:
+# paddleocr>=2.8.1

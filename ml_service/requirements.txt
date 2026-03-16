@@ -1,0 +1,11 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.30.0
+numpy>=1.26.0
+pillow>=10.2.0
+pydantic>=2.6.0
+# Install the appropriate Paddle runtime for your platform before using PaddleOCR.
+# Example: paddlepaddle>=2.6.0
+paddleocr>=2.8.1
+ultralytics>=8.2.0
+transformers>=4.40.0
+torch>=2.2.0

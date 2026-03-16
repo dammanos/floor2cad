@@ -1,0 +1,40 @@
+# 🎉 Floor2CAD - Quick Start
+
+## ✅ Current State
+
+- Backend and frontend builds are aligned
+- Duplicate frontend files were removed
+- Upload validation is now stricter
+- DXF download flow is ready for testing
+
+## 🚀 Start Testing
+
+```bash
+cd /Users/manos.dam/Floor2Cad
+npm run dev
+```
+
+Then open: **http://localhost:3000**
+
+## 🎯 What Works
+
+✅ PNG / JPEG upload
+✅ Conversion request flow
+✅ Stable placeholder wall detection
+✅ DXF generation
+✅ DXF download endpoint
+✅ React status and preview UI
+✅ Build validation via `npm test`
+
+## 📚 Key Docs
+
+- README.md - overview and commands
+- SETUP_GUIDE.md - setup details
+- PROJECT_STATUS.md - completed work and delivery strategy
+
+## ℹ️ Notes
+
+- PDF upload is currently disabled until rasterization is implemented safely.
+- The detection pipeline is still MVP-level and should be improved next.
+
+**Everything is ready. Just run: `npm run dev`**

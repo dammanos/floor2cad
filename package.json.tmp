@@ -1,0 +1,12 @@
+{
+  "scripts": {
+    "dev": "concurrently \"npm run server:dev\" \"npm run client:dev\"",
+    "server:dev": "nodemon --exec ts-node src/server/index.ts",
+    "client:dev": "PORT=3000 react-scripts start",
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "tsc",
+    "build:client": "react-scripts build",
+    "start": "node dist/server/index.js",
+    "test": "jest"
+  }
+}

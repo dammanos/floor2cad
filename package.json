@@ -1,0 +1,61 @@
+{
+  "name": "floor2cad",
+  "version": "1.0.0",
+  "description": "Convert floor plans to DXF files",
+  "main": "dist/server/index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run server:dev\" \"npm run client:dev\"",
+    "server:dev": "nodemon --exec \"ts-node --project tsconfig.server.json\" src/server/index.ts",
+    "client:dev": "PORT=3000 react-scripts start",
+    "ml:setup": "bash scripts/setup-ml-service.sh",
+    "ml:serve": "bash scripts/run-ml-service.sh",
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:client": "react-scripts build",
+    "start": "node dist/server/index.js",
+    "test": "npm run build",
+    "test:smoke": "node scripts/smoke-test.mjs",
+    "benchmark:report": "node scripts/benchmark-report.mjs"
+  },
+  "dependencies": {
+    "@tarikjabiri/dxf": "^2.8.9",
+    "ajv": "^8.17.1",
+    "axios": "^1.6.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "http-proxy-middleware": "^3.0.5",
+    "multer": "^1.4.5-lts.1",
+    "pdf2pic": "^3.2.0",
+    "sharp": "^0.32.0",
+    "tesseract.js": "^4.1.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.17",
+    "@types/multer": "^1.4.7",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "concurrently": "^8.0.0",
+    "nodemon": "^3.0.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.0.0",
+    "uuid": "^13.0.0"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}
