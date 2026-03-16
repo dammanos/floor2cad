@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+venv/
+.venv/
+
+# App generated files
+outputs/
+webapp/outputs/
+webapp/uploads/
+
+# CAD / floor plan data files
+*.dxf
+*.pdf
+*.dwg
+
+# Images (floor plans / uploads)
+*.png
+*.jpg
+*.jpeg
+*.tiff
+*.bmp
+
+# Keep static assets
+!webapp/static/logo.png
+!logo.png
