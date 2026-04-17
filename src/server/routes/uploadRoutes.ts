@@ -45,7 +45,7 @@ const upload = multer({
         if (allowedMimeTypes && allowedMimeTypes.includes(file.mimetype)) {
             cb(null, true);
         } else {
-            cb(createUploadValidationError('Unsupported file type. Please upload a PNG or JPEG floor plan.'));
+            cb(createUploadValidationError('Unsupported file type. Please upload a PNG, JPEG, or PDF floor plan.'));
         }
     },
 });
