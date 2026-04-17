@@ -11,7 +11,27 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from PIL import Image
-from pydantic import BaseModel, Field
+
+from .dxf_export import export as export_dxf_document
+from .imaging import decode_image, encode_image, rectify
+from .schemas import (
+    BoundingBoxModel,
+    ExportDxfRequest,
+    ExportDxfResponse,
+    ImageRequest,
+    JunctionModel,
+    OpeningSeed,
+    PointModel,
+    RectifyResponse,
+    RoomPolygon,
+    SolveRequest,
+    SolveResponse,
+    VectorizeRequest,
+    VectorizeResponse,
+    WallSegment,
+)
+from .solve import solve as solve_geometry
+from .vectorize import vectorize as vectorize_image
 
 try:
     from paddleocr import PaddleOCR
@@ -38,33 +58,41 @@ except ImportError:  # pragma: no cover - optional dependency
     AutoImageProcessor = None  # type: ignore[assignment]
     AutoModelForSemanticSegmentation = None  # type: ignore[assignment]
 
-app = FastAPI(title='Floor2CAD ML Service', version='0.1.0')
+app = FastAPI(title='Floor2CAD ML Service', version='0.2.0')
 
 
-class BoundingBoxModel(BaseModel):
+class OCRTextElement(ImageRequest):  # reused as a simple output schema below
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Legacy OCR / symbol / segment schemas (unchanged contract with the Node side)
+# ---------------------------------------------------------------------------
+
+
+from pydantic import BaseModel, Field  # noqa: E402  (keep legacy schemas below)
+
+
+class BoundingBoxLegacy(BaseModel):
     x: int
     y: int
     width: int
     height: int
 
 
-class ImageRequest(BaseModel):
-    imageBase64: str = Field(..., min_length=8)
-
-
-class OCRTextElement(BaseModel):
+class OCRTextElementLegacy(BaseModel):
     x: float
     y: float
     text: str
     confidence: float
-    boundingBox: BoundingBoxModel
+    boundingBox: BoundingBoxLegacy
     angle: float = 0.0
     category: str = 'unknown'
 
 
 class OCRResponse(BaseModel):
     engine: str
-    textElements: List[OCRTextElement]
+    textElements: List[OCRTextElementLegacy]
 
 
 class SymbolRequest(ImageRequest):
@@ -75,7 +103,7 @@ class SymbolRequest(ImageRequest):
 class SymbolPrediction(BaseModel):
     label: str
     confidence: float
-    boundingBox: BoundingBoxModel
+    boundingBox: BoundingBoxLegacy
     angle: float = 0.0
 
 
@@ -84,15 +112,20 @@ class SymbolResponse(BaseModel):
     predictions: List[SymbolPrediction]
 
 
-class SegmentationRegion(BaseModel):
+class SegmentationRegionLegacy(BaseModel):
     label: str
     coverage: float
-    boundingBox: BoundingBoxModel
+    boundingBox: BoundingBoxLegacy
 
 
 class SegmentationResponse(BaseModel):
     model: str
-    regions: List[SegmentationRegion]
+    regions: List[SegmentationRegionLegacy]
+
+
+# ---------------------------------------------------------------------------
+# Engines (unchanged)
+# ---------------------------------------------------------------------------
 
 
 @lru_cache(maxsize=1)
@@ -142,10 +175,22 @@ def get_segmentation_bundle() -> Any:
     return processor, model
 
 
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
+
+
 @app.get('/health')
 def health() -> Dict[str, Any]:
     return {
         'status': 'ok',
+        'version': '0.2.0',
+        'capabilities': {
+            'rectify': True,
+            'vectorize': True,
+            'solve': True,
+            'exportDxf': True,
+        },
         'ocr': {
             'enabled': os.getenv('ML_OCR_ENABLED', 'false').lower() in {'1', 'true', 'yes', 'on'},
             'backendInstalled': PaddleOCR is not None or RapidOCR is not None,
@@ -160,7 +205,85 @@ def health() -> Dict[str, Any]:
             'backendInstalled': AutoImageProcessor is not None and AutoModelForSemanticSegmentation is not None,
             'model': os.getenv('ML_SEGMENTATION_MODEL'),
         },
+        'floorplanModel': {
+            'enabled': False,
+            'detail': 'CubiCasa5K/HEAT weights not yet bundled. Wire ML_FLOORPLAN_MODEL_PATH.',
+        },
     }
+
+
+# ---------------------------------------------------------------------------
+# New pipeline endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post('/rectify', response_model=RectifyResponse)
+def rectify_endpoint(request: ImageRequest) -> RectifyResponse:
+    image = decode_image(request.imageBase64)
+    rectified, angle, perspective_applied, deskew_applied = rectify(image)
+    return RectifyResponse(
+        imageBase64=encode_image(rectified),
+        width=int(rectified.shape[1]),
+        height=int(rectified.shape[0]),
+        angle=float(angle),
+        perspectiveApplied=perspective_applied,
+        deskewApplied=deskew_applied,
+    )
+
+
+@app.post('/vectorize', response_model=VectorizeResponse)
+def vectorize_endpoint(request: VectorizeRequest) -> VectorizeResponse:
+    image = decode_image(request.imageBase64)
+    segments, width, height = vectorize_image(image, downsample=request.downsample)
+    walls = [
+        WallSegment(
+            startPoint=PointModel(x=segment.x1, y=segment.y1),
+            endPoint=PointModel(x=segment.x2, y=segment.y2),
+            thickness=segment.thickness,
+            confidence=segment.confidence,
+            orientation=segment.orientation(),
+        )
+        for segment in segments
+    ]
+    return VectorizeResponse(walls=walls, width=width, height=height)
+
+
+@app.post('/solve', response_model=SolveResponse)
+def solve_endpoint(request: SolveRequest) -> SolveResponse:
+    walls, openings, junctions, rooms = solve_geometry(
+        request.width,
+        request.height,
+        request.walls,
+        request.openings,
+    )
+    return SolveResponse(
+        walls=walls,
+        openings=openings,
+        junctions=junctions,
+        rooms=rooms,
+    )
+
+
+@app.post('/export-dxf', response_model=ExportDxfResponse)
+def export_dxf_endpoint(request: ExportDxfRequest) -> ExportDxfResponse:
+    dxf = export_dxf_document(request)
+    return ExportDxfResponse(dxf=dxf)
+
+
+@app.post('/segment-floorplan')
+def segment_floorplan_endpoint(_: ImageRequest) -> Dict[str, Any]:
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            'Floor-plan-aware segmentation model not yet configured. '
+            'Set ML_FLOORPLAN_MODEL_PATH and load CubiCasa5K / HEAT weights.'
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Legacy endpoints (kept for backwards compatibility)
+# ---------------------------------------------------------------------------
 
 
 @app.post('/ocr', response_model=OCRResponse)
@@ -170,8 +293,8 @@ def ocr(request: ImageRequest) -> OCRResponse:
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
-    image = decode_image(request.imageBase64)
-    text_elements: List[OCRTextElement] = []
+    image = _decode_pil(request.imageBase64)
+    text_elements: List[OCRTextElementLegacy] = []
 
     if PaddleOCR is not None and isinstance(engine, PaddleOCR):
         result = engine.ocr(np.array(image.convert('RGB')), cls=True)
@@ -192,7 +315,7 @@ def ocr(request: ImageRequest) -> OCRResponse:
 
                 box = polygon_to_box(polygon)
                 text_elements.append(
-                    OCRTextElement(
+                    OCRTextElementLegacy(
                         x=box.x + box.width / 2,
                         y=box.y + box.height / 2,
                         text=text,
@@ -214,7 +337,7 @@ def ocr(request: ImageRequest) -> OCRResponse:
 
             box = polygon_to_box(points)
             text_elements.append(
-                OCRTextElement(
+                OCRTextElementLegacy(
                     x=box.x + box.width / 2,
                     y=box.y + box.height / 2,
                     text=str(text).strip(),
@@ -236,7 +359,7 @@ def detect_symbols(request: SymbolRequest) -> SymbolResponse:
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
-    image = np.array(decode_image(request.imageBase64).convert('RGB'))
+    image = np.array(_decode_pil(request.imageBase64).convert('RGB'))
     label_filter = {normalize_label(label) for label in request.labels or []}
     predictions: List[SymbolPrediction] = []
 
@@ -256,7 +379,7 @@ def detect_symbols(request: SymbolRequest) -> SymbolResponse:
                 SymbolPrediction(
                     label=label,
                     confidence=float(box.conf[0].item()),
-                    boundingBox=BoundingBoxModel(
+                    boundingBox=BoundingBoxLegacy(
                         x=int(round(x1)),
                         y=int(round(y1)),
                         width=max(1, int(round(x2 - x1))),
@@ -281,7 +404,7 @@ def segment(request: ImageRequest) -> SegmentationResponse:
     if torch is None or F is None:
         raise HTTPException(status_code=503, detail='transformers/torch are not installed')
 
-    image = decode_image(request.imageBase64).convert('RGB')
+    image = _decode_pil(request.imageBase64).convert('RGB')
     inputs = processor(images=image, return_tensors='pt')
 
     with torch.no_grad():
@@ -295,7 +418,7 @@ def segment(request: ImageRequest) -> SegmentationResponse:
     )
     mask = logits.argmax(dim=1)[0].cpu().numpy()
     id2label = getattr(model.config, 'id2label', {})
-    regions: List[SegmentationRegion] = []
+    regions: List[SegmentationRegionLegacy] = []
 
     for class_id in np.unique(mask):
         label = normalize_label(str(id2label.get(int(class_id), class_id)))
@@ -307,10 +430,10 @@ def segment(request: ImageRequest) -> SegmentationResponse:
             continue
 
         regions.append(
-            SegmentationRegion(
+            SegmentationRegionLegacy(
                 label=label,
                 coverage=float(len(xs) / mask.size),
-                boundingBox=BoundingBoxModel(
+                boundingBox=BoundingBoxLegacy(
                     x=int(xs.min()),
                     y=int(ys.min()),
                     width=max(1, int(xs.max() - xs.min() + 1)),
@@ -325,7 +448,12 @@ def segment(request: ImageRequest) -> SegmentationResponse:
     )
 
 
-def decode_image(image_base64: str) -> Image.Image:
+# ---------------------------------------------------------------------------
+# Legacy helpers
+# ---------------------------------------------------------------------------
+
+
+def _decode_pil(image_base64: str) -> Image.Image:
     try:
         raw = base64.b64decode(image_base64)
         return Image.open(io.BytesIO(raw))
@@ -333,10 +461,10 @@ def decode_image(image_base64: str) -> Image.Image:
         raise HTTPException(status_code=400, detail=f'invalid image payload: {error}') from error
 
 
-def polygon_to_box(points: List[List[float]]) -> BoundingBoxModel:
+def polygon_to_box(points: List[List[float]]) -> BoundingBoxLegacy:
     xs = [point[0] for point in points]
     ys = [point[1] for point in points]
-    return BoundingBoxModel(
+    return BoundingBoxLegacy(
         x=int(round(min(xs))),
         y=int(round(min(ys))),
         width=max(1, int(round(max(xs) - min(xs)))),
