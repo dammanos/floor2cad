@@ -16,3 +16,12 @@ venv/
 __pycache__/
 ml_service/.venv/
 ml_service/models/
+
+# Tesseract language data (downloaded on first run)
+*.traineddata
+
+# Sample plans — keep out of git (use LFS or a side branch if needed)
+*.pdf
+floor*.png
+floor*.jpg
+floor*.jpeg
