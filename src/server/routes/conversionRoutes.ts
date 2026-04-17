@@ -45,14 +45,10 @@ router.post('/convert', async (req: Request, res: Response) => {
         console.log(`Converting file: ${imagePath}`);
         
         try {
-            console.log('Starting floor plan processing...');
-            const floorPlan = await converter.process(imagePath);
-            console.log('Floor plan processed successfully');
+            console.log('Starting floor plan conversion...');
+            const { floorPlan, dxfContent, usedMLPipeline, rectification } = await converter.convert(imagePath);
+            console.log(`Conversion complete (ML pipeline: ${usedMLPipeline})`);
             const mlStatus = await converter.getMLStatus();
-            
-            console.log('Generating DXF content...');
-            const dxfContent = converter.generateDXF(floorPlan);
-            console.log('DXF content generated successfully');
 
             await fs.mkdir(outputDir, { recursive: true });
 
@@ -68,6 +64,8 @@ router.post('/convert', async (req: Request, res: Response) => {
                 dxfFile: `${fileId}.dxf`,
                 data: floorPlan,
                 mlStatus,
+                usedMLPipeline,
+                rectification,
                 debugArtifacts: {
                     directory: path.relative(process.cwd(), debugArtifacts.directory),
                     overlaySvg: path.relative(process.cwd(), debugArtifacts.overlaySvgPath),

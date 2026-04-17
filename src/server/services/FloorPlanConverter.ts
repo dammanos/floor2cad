@@ -9,7 +9,21 @@ import { TextDetector } from './detectors/TextDetector';
 import { boxesOverlap, mergeBoundingBoxes } from './detectors/DetectionUtils';
 import { ExtractionMetrics, FloorPlan, MLStatus } from '../../shared/types';
 import { MLServiceClient } from './MLServiceClient';
+import {
+    MLPipelineResult,
+    MLServicePipeline,
+    openingFromDto,
+    roomFromDto,
+    wallSegmentFromDto,
+} from './MLServicePipeline';
 import { v4 as uuidv4 } from 'uuid';
+
+export interface ConversionOutput {
+    floorPlan: FloorPlan;
+    dxfContent: string;
+    usedMLPipeline: boolean;
+    rectification?: MLPipelineResult['rectification'];
+}
 
 export class FloorPlanConverter {
     private imageProcessor: ImageProcessor;
@@ -21,6 +35,7 @@ export class FloorPlanConverter {
     private furnitureDetector: FurnitureDetector;
     private roomDetector: RoomDetector;
     private mlServiceClient: MLServiceClient;
+    private mlPipeline: MLServicePipeline;
 
     constructor() {
         this.imageProcessor = new ImageProcessor();
@@ -32,11 +47,176 @@ export class FloorPlanConverter {
         this.openingDetector = new OpeningDetector();
         this.furnitureDetector = new FurnitureDetector();
         this.roomDetector = new RoomDetector();
+        this.mlPipeline = new MLServicePipeline();
     }
 
-    async process(imagePath: string): Promise<FloorPlan> {
-        this.mlServiceClient.resetRunUsage();
+    async convert(imagePath: string): Promise<ConversionOutput> {
         const imageBuffer = await this.imageProcessor.loadImage(imagePath);
+        this.mlServiceClient.resetRunUsage();
+
+        if (this.mlPipeline.available) {
+            const mlResult = await this.tryMLPipeline(imagePath, imageBuffer);
+            if (mlResult) {
+                return {
+                    floorPlan: mlResult.floorPlan,
+                    dxfContent: mlResult.dxfContent,
+                    usedMLPipeline: true,
+                    rectification: mlResult.rectification,
+                };
+            }
+        }
+
+        const floorPlan = await this.processFallback(imagePath, imageBuffer);
+        return {
+            floorPlan,
+            dxfContent: this.dxfGenerator.generate(floorPlan),
+            usedMLPipeline: false,
+        };
+    }
+
+    /** @deprecated prefer `convert()` which returns DXF alongside the plan. */
+    async process(imagePath: string): Promise<FloorPlan> {
+        const imageBuffer = await this.imageProcessor.loadImage(imagePath);
+        this.mlServiceClient.resetRunUsage();
+        return this.processFallback(imagePath, imageBuffer);
+    }
+
+    async getMLStatus(): Promise<MLStatus> {
+        return this.mlServiceClient.getStatus();
+    }
+
+    generateDXF(floorPlan: FloorPlan): string {
+        return this.dxfGenerator.generate(floorPlan);
+    }
+
+    // ---------------------------------------------------------------------
+    // ML-first path
+    // ---------------------------------------------------------------------
+
+    private async tryMLPipeline(imagePath: string, rawBuffer: Buffer): Promise<MLPipelineResult | null> {
+        const rectified = await this.mlPipeline.rectify(rawBuffer);
+        const workingBuffer = rectified?.buffer ?? rawBuffer;
+        const rectification = rectified?.meta
+            ? {
+                angle: rectified.meta.angle,
+                perspectiveApplied: rectified.meta.perspectiveApplied,
+                deskewApplied: rectified.meta.deskewApplied,
+            }
+            : undefined;
+
+        const downsample = Number(process.env.ML_VECTORIZE_DOWNSAMPLE || 1800);
+        const vector = await this.mlPipeline.vectorize(workingBuffer, downsample);
+        if (!vector || vector.walls.length === 0) {
+            return null;
+        }
+
+        const textElements = await this.textDetector.detect(workingBuffer);
+        const analysis = await this.imageProcessor.prepareAnalysisImage(workingBuffer);
+        const heuristicOpenings = this.openingDetector.detect(
+            vector.walls.map((wallDto) => wallSegmentFromDto(wallDto)),
+            analysis,
+        );
+        const openingSeeds = heuristicOpenings.map((opening) => ({
+            position: { x: opening.position.x, y: opening.position.y },
+            width: opening.width,
+            height: opening.height,
+            type: opening.type,
+            confidence: opening.confidence,
+        }));
+
+        const solved = await this.mlPipeline.solve(
+            vector.width,
+            vector.height,
+            vector.walls,
+            openingSeeds,
+        );
+        if (!solved) {
+            return null;
+        }
+
+        const walls = solved.walls.map((wallDto) => wallSegmentFromDto(wallDto));
+        const openings = solved.openings.map((dto) => openingFromDto(dto, walls));
+        const rooms = solved.rooms.map((dto) => roomFromDto(dto, textElements));
+        const { dimensions, scaleResult } = this.dimensionDetector.detect(textElements, walls);
+        const furniture = this.furnitureDetector.detect(analysis, walls, textElements);
+        const metrics = this.computeMetrics(walls, openings, furniture, dimensions, textElements, rooms, solved.junctions.length, scaleResult.confidence);
+
+        const floorPlan: FloorPlan = {
+            id: uuidv4(),
+            imagePath,
+            width: vector.width,
+            height: vector.height,
+            scale: scaleResult.scale,
+            unit: scaleResult.unit,
+            walls,
+            openings,
+            furniture: this.assignFurnitureRooms(furniture, rooms),
+            dimensions,
+            textElements,
+            rooms,
+            metrics,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+        };
+
+        const exportedDxf = await this.mlPipeline.exportDxf({
+            width: vector.width,
+            height: vector.height,
+            scale: scaleResult.unit === 'px' ? 1.0 : scaleResult.scale,
+            unit: scaleResult.unit,
+            walls: walls.map((wall) => ({
+                startPoint: wall.startPoint,
+                endPoint: wall.endPoint,
+                thickness: wall.thickness,
+            })),
+            openings: openings.map((opening) => ({
+                position: opening.position,
+                width: opening.width,
+                height: opening.height,
+                angle: opening.angle,
+                type: opening.type,
+            })),
+            dimensions: dimensions
+                .filter((dim) => dim.startPoint && dim.endPoint && dim.unit !== 'px')
+                .map((dim) => ({
+                    startPoint: dim.startPoint as { x: number; y: number },
+                    endPoint: dim.endPoint as { x: number; y: number },
+                    value: dim.value,
+                    unit: dim.unit,
+                })),
+            texts: textElements.map((text) => ({
+                position: { x: text.x, y: text.y },
+                text: text.text,
+                height: Math.max(1.5, text.boundingBox.height * 0.7),
+                angle: text.angle,
+            })),
+            rooms: rooms.map((room) => ({
+                boundary: room.boundary,
+                name: room.name,
+                centroid: room.centroid,
+            })),
+        });
+
+        if (!exportedDxf) {
+            return {
+                floorPlan,
+                dxfContent: this.dxfGenerator.generate(floorPlan),
+                rectification,
+            };
+        }
+
+        return {
+            floorPlan,
+            dxfContent: exportedDxf,
+            rectification,
+        };
+    }
+
+    // ---------------------------------------------------------------------
+    // Deterministic fallback path (unchanged semantics)
+    // ---------------------------------------------------------------------
+
+    private async processFallback(imagePath: string, imageBuffer: Buffer): Promise<FloorPlan> {
         const analysis = await this.imageProcessor.prepareAnalysisImage(imageBuffer);
         const textElements = await this.textDetector.detect(imageBuffer);
         const maskedTextRegions = mergeBoundingBoxes(textElements.map((textElement) => textElement.boundingBox), 6);
@@ -62,25 +242,18 @@ export class FloorPlanConverter {
         );
         const linkedFurniture = this.assignFurnitureRooms(furniture, rooms);
         const junctionCount = this.countJunctions(walls);
-
-        const metrics: ExtractionMetrics = {
-            wallCount: walls.length,
-            openingCount: openings.length,
-            furnitureCount: linkedFurniture.length,
-            dimensionCount: dimensions.length,
-            textCount: textElements.length,
-            roomCount: rooms.length,
+        const metrics = this.computeMetrics(
+            walls,
+            openings,
+            linkedFurniture,
+            dimensions,
+            textElements,
+            rooms,
             junctionCount,
-            wallConfidence: this.averageConfidence(walls.map((wall) => wall.confidence)),
-            textConfidence: this.averageConfidence(textElements.map((textElement) => textElement.confidence)),
-            scaleConfidence: scaleResult.confidence,
-            totalWallLength: walls.reduce((sum, wall) => (
-                sum + Math.hypot(wall.endPoint.x - wall.startPoint.x, wall.endPoint.y - wall.startPoint.y)
-            ), 0),
-            averageWallThickness: this.averageConfidence(walls.map((wall) => wall.thickness)),
-        };
+            scaleResult.confidence,
+        );
 
-        const floorPlan: FloorPlan = {
+        return {
             id: uuidv4(),
             imagePath,
             width: analysis.width,
@@ -97,23 +270,44 @@ export class FloorPlanConverter {
             createdAt: new Date(),
             updatedAt: new Date(),
         };
-
-        return floorPlan;
     }
 
-    async getMLStatus(): Promise<MLStatus> {
-        return this.mlServiceClient.getStatus();
-    }
+    // ---------------------------------------------------------------------
+    // Shared helpers
+    // ---------------------------------------------------------------------
 
-    generateDXF(floorPlan: FloorPlan): string {
-        return this.dxfGenerator.generate(floorPlan);
+    private computeMetrics(
+        walls: FloorPlan['walls'],
+        openings: FloorPlan['openings'],
+        furniture: FloorPlan['furniture'],
+        dimensions: FloorPlan['dimensions'],
+        textElements: FloorPlan['textElements'],
+        rooms: FloorPlan['rooms'],
+        junctionCount: number,
+        scaleConfidence: number,
+    ): ExtractionMetrics {
+        return {
+            wallCount: walls.length,
+            openingCount: openings.length,
+            furnitureCount: furniture.length,
+            dimensionCount: dimensions.length,
+            textCount: textElements.length,
+            roomCount: rooms.length,
+            junctionCount,
+            wallConfidence: this.averageConfidence(walls.map((wall) => wall.confidence)),
+            textConfidence: this.averageConfidence(textElements.map((textElement) => textElement.confidence)),
+            scaleConfidence,
+            totalWallLength: walls.reduce((sum, wall) => (
+                sum + Math.hypot(wall.endPoint.x - wall.startPoint.x, wall.endPoint.y - wall.startPoint.y)
+            ), 0),
+            averageWallThickness: this.averageConfidence(walls.map((wall) => wall.thickness)),
+        };
     }
 
     private averageConfidence(values: number[]): number {
         if (!values.length) {
             return 0;
         }
-
         return values.reduce((sum, value) => sum + value, 0) / values.length;
     }
 
@@ -182,7 +376,6 @@ export class FloorPlanConverter {
         if (opening.boundingBox) {
             return opening.boundingBox;
         }
-
         return {
             x: opening.position.x - opening.width / 2,
             y: opening.position.y - opening.height / 2,
@@ -195,7 +388,6 @@ export class FloorPlanConverter {
         if (item.boundingBox) {
             return item.boundingBox;
         }
-
         return {
             x: item.position.x - item.width / 2,
             y: item.position.y - item.depth / 2,
