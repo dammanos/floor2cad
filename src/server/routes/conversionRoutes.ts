@@ -1,11 +1,16 @@
 import express, { Router, Request, Response } from 'express';
 import { FloorPlanConverter } from '../services/FloorPlanConverter';
 import { DebugArtifactService } from '../services/DebugArtifactService';
+import { VectorPdfExtractor } from '../services/VectorPdfExtractor';
+import { PdfConverter } from '../services/PdfConverter';
+import { FloorPlan } from '../../shared/types';
 import { promises as fs } from 'fs';
 import path from 'path';
 
 const router = Router();
 const converter = new FloorPlanConverter();
+const vectorExtractor = new VectorPdfExtractor();
+const pdfConverter = new PdfConverter();
 const debugArtifactService = new DebugArtifactService();
 const uploadDir = path.resolve(process.cwd(), process.env.UPLOAD_DIR || 'uploads');
 const outputDir = path.resolve(process.cwd(), process.env.OUTPUT_DIR || 'outputs');
@@ -46,8 +51,27 @@ router.post('/convert', async (req: Request, res: Response) => {
         
         try {
             console.log('Starting floor plan processing...');
-            const floorPlan = await converter.process(imagePath);
-            console.log('Floor plan processed successfully');
+            const ext = path.extname(imagePath).toLowerCase();
+            let floorPlan: FloorPlan;
+            let pipeline: 'vector-pdf' | 'cv-raster' = 'cv-raster';
+
+            if (ext === '.pdf') {
+                // Fast path: read a vector PDF's geometry/text directly.
+                const extraction = await vectorExtractor.process(imagePath);
+                console.log(`PDF classified as ${extraction.isVector ? 'VECTOR' : 'RASTER'}`, extraction.stats);
+                if (extraction.isVector && extraction.floorPlan) {
+                    floorPlan = extraction.floorPlan;
+                    pipeline = 'vector-pdf';
+                } else {
+                    // Scanned PDF: rasterize, then run the CV pipeline.
+                    const pngPath = await pdfConverter.renderPage(imagePath, uploadDir, `${fileId}-page`);
+                    floorPlan = await converter.process(pngPath);
+                }
+            } else {
+                floorPlan = await converter.process(imagePath);
+            }
+
+            console.log(`Floor plan processed successfully via ${pipeline}`);
             const mlStatus = await converter.getMLStatus();
             
             console.log('Generating DXF content...');

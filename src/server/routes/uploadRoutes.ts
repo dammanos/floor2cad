@@ -3,7 +3,6 @@ import multer from 'multer';
 import path from 'path';
 import { promises as fs } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import { PdfConverter } from '../services/PdfConverter';
 
 const router = Router();
 const uploadDir = path.resolve(process.cwd(), process.env.UPLOAD_DIR || 'uploads');
@@ -83,19 +82,8 @@ router.post('/upload', (req: Request, res: Response, next) => {
 
         await fs.rename(req.file.path, newPath);
 
-        // If the file is a PDF, render page 1 to PNG at high DPI
-        let finalPath = newPath;
-        if (ext === '.pdf') {
-            try {
-                const pdfConverter = new PdfConverter();
-                finalPath = await pdfConverter.renderPage(newPath, uploadDir, fileId);
-            } catch (pdfError: any) {
-                console.error('PDF conversion error:', pdfError);
-                return res.status(500).json({
-                    error: 'Failed to render PDF. Make sure GraphicsMagick and Ghostscript are installed.',
-                });
-            }
-        }
+        // PDFs are kept as-is. Conversion decides per-file: a vector PDF is read
+        // directly (fast path); a scanned PDF is rasterized then run through CV.
 
         res.json({
             success: true,

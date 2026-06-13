@@ -27,6 +27,7 @@
     "http-proxy-middleware": "^3.0.5",
     "multer": "^1.4.5-lts.1",
     "pdf2pic": "^3.2.0",
+    "pdfjs-dist": "^4.8.69",
     "sharp": "^0.32.0",
     "tesseract.js": "^4.1.1"
   },
