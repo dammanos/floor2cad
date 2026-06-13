@@ -35,11 +35,26 @@ const CFG = {
     MIN_SEG: 3,
     JOIN_GAP: 20,
     BUCKET: 1.5,
-    MIN_THICK: 2,
+    MIN_THICK: 4,   // below this a "pair" is hatching/tile fill, not a wall cavity
     MAX_THICK: 16,
     MIN_OVERLAP: 8,
     MIN_WALL_LEN: 40,
     SNAP: 14,
+    // Bridging collinear runs across gaps (points; assumes a typical 1:50-1:100
+    // print). DOOR_MAX: join two long flanking runs across a door-sized gap.
+    // MAX_BRIDGE: join across a wider gap only if a perpendicular wall crosses
+    // it (a real junction). BRIDGE_MIN_LEN: flank length required for a blind
+    // door bridge, so noise fragments cannot chain into fake walls.
+    DOOR_MAX: 130,
+    MAX_BRIDGE: 260,
+    BRIDGE_MIN_LEN: 40,   // only bridge flanks already wall-length (not furniture)
+    KEEP_SINGLE: false,   // single (unpaired) lines are ambiguous (dimension/grid) — drop
+    MIN_SINGLE_LEN: 70,   // ...unless kept, then this is the min length
+    HATCH_PITCH: 34,      // parallel walls within this spacing may be a fill pattern
+    // A connected stack of this many parallel close walls is treated as a fill
+    // pattern and dropped. Kept deliberately high: under-pruning leaves a
+    // deletable artifact, over-pruning silently removes real walls.
+    HATCH_MIN_STACK: 6,
 };
 
 export class VectorPdfExtractor {
@@ -185,6 +200,48 @@ export class VectorPdfExtractor {
         return runs;
     }
 
+    // Join collinear runs on the same line across a gap, but only when the gap
+    // is a plausible door (between two long flanking runs) or a perpendicular
+    // wall crosses it (a junction). Never bridges blindly across empty space.
+    private bridgeRuns(runs: Run[], perpRuns: Run[]): Run[] {
+        const buckets = new Map<number, Run[]>();
+        for (const r of runs) {
+            const key = Math.round(r.pos / CFG.BUCKET);
+            if (!buckets.has(key)) buckets.set(key, []);
+            (buckets.get(key) as Run[]).push(r);
+        }
+        const out: Run[] = [];
+        for (const group of buckets.values()) {
+            group.sort((p, q) => p.a - q.a);
+            let cur: Run = { ...group[0] };
+            for (let i = 1; i < group.length; i++) {
+                const next = group[i];
+                const gap = next.a - cur.b;
+                const linePos = (cur.pos + next.pos) / 2;
+                const flanksLong = (cur.b - cur.a) >= CFG.BRIDGE_MIN_LEN && (next.b - next.a) >= CFG.BRIDGE_MIN_LEN;
+                const justified = gap <= 0
+                    || (gap <= CFG.DOOR_MAX && flanksLong)
+                    || (gap <= CFG.MAX_BRIDGE && this.hasPerpCrossing(linePos, cur.b, next.a, perpRuns));
+                if (justified) {
+                    cur.pos = (cur.pos * (cur.b - cur.a) + next.pos * (next.b - next.a)) / Math.max(1, (cur.b - cur.a) + (next.b - next.a));
+                    cur.b = Math.max(cur.b, next.b);
+                } else {
+                    out.push(cur); cur = { ...next };
+                }
+            }
+            out.push(cur);
+        }
+        return out;
+    }
+
+    private hasPerpCrossing(linePos: number, gapStart: number, gapEnd: number, perpRuns: Run[]): boolean {
+        const tol = CFG.SNAP;
+        for (const p of perpRuns) {
+            if (p.pos >= gapStart - tol && p.pos <= gapEnd + tol && linePos >= p.a - tol && linePos <= p.b + tol) return true;
+        }
+        return false;
+    }
+
     private buildWalls(segments: Segment[]): WallLine[] {
         const horiz: Run[] = []; const vert: Run[] = [];
         for (const s of segments) {
@@ -192,8 +249,11 @@ export class VectorPdfExtractor {
             if (dy <= CFG.AXIS_TOL && dx > CFG.MIN_SEG) horiz.push({ pos: (s.y1 + s.y2) / 2, a: Math.min(s.x1, s.x2), b: Math.max(s.x1, s.x2) });
             else if (dx <= CFG.AXIS_TOL && dy > CFG.MIN_SEG) vert.push({ pos: (s.x1 + s.x2) / 2, a: Math.min(s.y1, s.y2), b: Math.max(s.y1, s.y2) });
         }
-        const hRuns = this.mergeRuns(horiz);
-        const vRuns = this.mergeRuns(vert);
+        const hRuns0 = this.mergeRuns(horiz);
+        const vRuns0 = this.mergeRuns(vert);
+        // Bridge collinear runs across doors/junctions so walls span rooms.
+        const hRuns = this.bridgeRuns(hRuns0, vRuns0);
+        const vRuns = this.bridgeRuns(vRuns0, hRuns0);
 
         const overlap = (r1: Run, r2: Run) => Math.min(r1.b, r2.b) - Math.max(r1.a, r2.a);
         const build = (allRuns: Run[], orient: 'h' | 'v'): WallLine[] => {
@@ -217,7 +277,13 @@ export class VectorPdfExtractor {
                     used[best] = true;
                     pos = (runs[i].pos + runs[best].pos) / 2;
                     a = Math.max(runs[i].a, runs[best].a); b = Math.min(runs[i].b, runs[best].b); thickness = bestGap;
-                } else { pos = runs[i].pos; a = runs[i].a; b = runs[i].b; thickness = 2; }
+                } else {
+                    // Unpaired line: a single line is ambiguous (could be an exterior
+                    // wall, but also a dimension/grid line), so by default drop it and
+                    // trust only double-line cavities.
+                    if (!CFG.KEEP_SINGLE || runs[i].b - runs[i].a < CFG.MIN_SINGLE_LEN) continue;
+                    pos = runs[i].pos; a = runs[i].a; b = runs[i].b; thickness = 2;
+                }
                 out.push(orient === 'h'
                     ? { x1: a, y1: pos, x2: b, y2: pos, thickness, orientation: 'horizontal' }
                     : { x1: pos, y1: a, x2: pos, y2: b, thickness, orientation: 'vertical' });
@@ -226,12 +292,49 @@ export class VectorPdfExtractor {
         };
         const walls = [...build(hRuns, 'h'), ...build(vRuns, 'v')];
 
+        // Drop hatch/decking regions: a real wall is an isolated cavity (2 lines);
+        // 4+ parallel walls stacked at regular close spacing is a fill pattern.
+        const cleaned = this.suppressHatchStacks(walls);
+
         // Junction snapping: extend wall ends to meet crossing perpendicular walls.
-        const hWalls = walls.filter((w) => w.orientation === 'horizontal');
-        const vWalls = walls.filter((w) => w.orientation === 'vertical');
+        const hWalls = cleaned.filter((w) => w.orientation === 'horizontal');
+        const vWalls = cleaned.filter((w) => w.orientation === 'vertical');
         this.snap(hWalls, vWalls, 'h');
         this.snap(vWalls, hWalls, 'v');
-        return walls;
+        return cleaned;
+    }
+
+    private suppressHatchStacks(walls: WallLine[]): WallLine[] {
+        const drop = new Set<WallLine>();
+        const pos = (w: WallLine) => (w.orientation === 'horizontal' ? w.y1 : w.x1);
+        const ext = (w: WallLine): [number, number] => (w.orientation === 'horizontal'
+            ? [Math.min(w.x1, w.x2), Math.max(w.x1, w.x2)]
+            : [Math.min(w.y1, w.y2), Math.max(w.y1, w.y2)]);
+        const neighbours = (a: WallLine, b: WallLine): boolean => {
+            if (Math.abs(pos(a) - pos(b)) > CFG.HATCH_PITCH) return false;
+            const [a1, b1] = ext(a); const [a2, b2] = ext(b);
+            return Math.min(b1, b2) - Math.max(a1, a2) > 10; // extents overlap
+        };
+        // Connected components of parallel, close, overlapping walls. A component
+        // of 4+ is a fill pattern (hatch/decking), not separate walls.
+        for (const orient of ['horizontal', 'vertical'] as const) {
+            const group = walls.filter((w) => w.orientation === orient);
+            const seen = new Set<WallLine>();
+            for (const start of group) {
+                if (seen.has(start)) continue;
+                const comp: WallLine[] = [];
+                const queue = [start]; seen.add(start);
+                while (queue.length) {
+                    const w = queue.pop() as WallLine;
+                    comp.push(w);
+                    for (const o of group) {
+                        if (!seen.has(o) && neighbours(w, o)) { seen.add(o); queue.push(o); }
+                    }
+                }
+                if (comp.length >= CFG.HATCH_MIN_STACK) comp.forEach((w) => drop.add(w));
+            }
+        }
+        return walls.filter((w) => !drop.has(w));
     }
 
     private snap(movers: WallLine[], crossers: WallLine[], axis: 'h' | 'v'): void {
