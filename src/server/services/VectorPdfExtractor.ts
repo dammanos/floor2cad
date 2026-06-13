@@ -22,6 +22,9 @@ export interface VectorExtraction {
         segments: number;
         walls: number;
         textItems: number;
+        scale?: number;
+        unit?: string;
+        scaleConfidence?: number;
     };
 }
 
@@ -77,7 +80,10 @@ export class VectorPdfExtractor {
         return {
             isVector: true,
             floorPlan,
-            stats: { paths: pathOps, images: imageOps, segments: segments.length, walls: walls.length, textItems: textElements.length },
+            stats: {
+                paths: pathOps, images: imageOps, segments: segments.length, walls: walls.length, textItems: textElements.length,
+                scale: floorPlan.scale, unit: floorPlan.unit, scaleConfidence: floorPlan.metrics.scaleConfidence,
+            },
         };
     }
 
@@ -273,6 +279,58 @@ export class VectorPdfExtractor {
         return 'label';
     }
 
+    /**
+     * Recover real-world scale (mm per PDF point) from dimension texts.
+     * Decimal dimension values (metres) laid out in a chain are spaced in
+     * proportion to the lengths they annotate, so adjacent-text spacing votes a
+     * scale. The vote is weak on schedule-heavy drawings, so it is corroborated
+     * against wall thickness (interior walls are ~0.05-0.25m) before being
+     * trusted. Returns confidence in [0,1]; callers should gate on it.
+     */
+    private estimateScale(textElements: TextElement[], wallLines: WallLine[]): { mmPerPt: number; confidence: number; votes: number } {
+        const dims = textElements
+            .filter((t) => /^\d+[.,]\d+$/.test(t.text))
+            .map((t) => ({ v: parseFloat(t.text.replace(',', '.')), x: t.x, y: t.y }))
+            .filter((d) => d.v >= 0.2 && d.v <= 25);
+
+        const groupVote = (key: 'x' | 'y', span: 'x' | 'y'): number[] => {
+            const sorted = [...dims].sort((a, b) => a[key] - b[key] || a[span] - b[span]);
+            const groups: Array<{ k: number; items: typeof dims }> = [];
+            for (const d of sorted) {
+                let g = groups.find((g) => Math.abs(g.k - d[key]) < 6);
+                if (!g) { g = { k: d[key], items: [] }; groups.push(g); }
+                g.items.push(d); g.k = (g.k * (g.items.length - 1) + d[key]) / g.items.length;
+            }
+            const out: number[] = [];
+            for (const g of groups) {
+                g.items.sort((a, b) => a[span] - b[span]);
+                for (let i = 0; i < g.items.length - 1; i++) {
+                    const d = g.items[i + 1][span] - g.items[i][span];
+                    if (d < 4) continue;
+                    const s = ((g.items[i].v + g.items[i + 1].v) / 2) / d; // m per pt
+                    if (s > 0.003 && s < 0.06) out.push(s);
+                }
+            }
+            return out;
+        };
+        const votes = [...groupVote('y', 'x'), ...groupVote('x', 'y')].sort((a, b) => a - b);
+        if (votes.length < 4) return { mmPerPt: 0, confidence: 0, votes: votes.length };
+
+        const mPerPt = votes[Math.floor(votes.length / 2)];
+        const tight = votes.filter((s) => Math.abs(s - mPerPt) <= 0.15 * mPerPt).length;
+        let confidence = tight / votes.length;
+
+        // Corroborate with wall thickness: double-line gap should map to a real
+        // interior-wall thickness. Agreement lifts confidence; conflict caps it.
+        const gaps = wallLines.filter((w) => w.thickness > 2).map((w) => w.thickness).sort((a, b) => a - b);
+        if (gaps.length) {
+            const realThick = gaps[Math.floor(gaps.length / 2)] * mPerPt; // metres
+            if (realThick >= 0.04 && realThick <= 0.3) confidence = Math.min(0.85, confidence + 0.2);
+            else confidence = Math.min(confidence, 0.3);
+        }
+        return { mmPerPt: mPerPt * 1000, confidence, votes: votes.length };
+    }
+
     private assemble(imagePath: string, width: number, height: number, wallLines: WallLine[], textElements: TextElement[]): FloorPlan {
         const walls: Wall[] = wallLines.map((w) => ({
             id: uuidv4(),
@@ -284,6 +342,14 @@ export class VectorPdfExtractor {
             orientation: w.orientation,
         }));
         const totalWallLength = walls.reduce((s, w) => s + Math.hypot(w.endPoint.x - w.startPoint.x, w.endPoint.y - w.startPoint.y), 0);
+
+        // Apply the recovered scale only when corroborated; otherwise keep the
+        // drawing in points (scale 1) and flag it for manual confirmation.
+        const scaleEst = this.estimateScale(textElements, wallLines);
+        const applyScale = scaleEst.confidence >= 0.4;
+        const scale = applyScale ? scaleEst.mmPerPt : 1;
+        const unit: FloorPlan['unit'] = applyScale ? 'mm' : 'px';
+
         const metrics: ExtractionMetrics = {
             wallCount: walls.length,
             openingCount: 0,
@@ -294,7 +360,7 @@ export class VectorPdfExtractor {
             junctionCount: 0,
             wallConfidence: walls.length ? 0.9 : 0,
             textConfidence: 1,
-            scaleConfidence: 0,
+            scaleConfidence: scaleEst.confidence,
             totalWallLength,
             averageWallThickness: walls.length ? walls.reduce((s, w) => s + w.thickness, 0) / walls.length : 0,
         };
@@ -304,8 +370,8 @@ export class VectorPdfExtractor {
             imagePath,
             width,
             height,
-            scale: 1,
-            unit: 'px',
+            scale,
+            unit,
             walls,
             openings: [],
             furniture: [],
